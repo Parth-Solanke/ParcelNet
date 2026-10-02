@@ -1,5 +1,4 @@
-from pathlib import Path
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,13 +21,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include Routers
-app.include_router(projects.router)
-app.include_router(jobs.router)
-app.include_router(layers.router)
-app.include_router(parcels.router)
-app.include_router(validation.router)
-app.include_router(gt.router)
+# Root level and /api/v1 routers
+api_v1 = APIRouter(prefix="/api/v1")
+for r in [projects.router, jobs.router, layers.router, parcels.router, validation.router, gt.router]:
+    app.include_router(r)
+    api_v1.include_router(r)
+
+app.include_router(api_v1)
 
 
 @app.get("/health", tags=["system"])

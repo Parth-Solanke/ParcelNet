@@ -57,13 +57,17 @@ async def get_layer_geojson(
         bbox_geom = box(minx, miny, maxx, maxy)
         gdf = gdf[gdf.geometry.intersects(bbox_geom)]
 
-    return gdf.__geo_interface__
+    if len(gdf) == 0:
+        return {"type": "FeatureCollection", "features": []}
+
+    res_geojson = gdf.__geo_interface__
+    return res_geojson
 
 
 @router.get("/export/download")
 async def export_layers_download(
     project_id: str,
-    format: str = Query("geojson", regex="^(geojson|gpkg|shp)$"),
+    format: str = Query("geojson", pattern="^(geojson|gpkg|shp)$"),
     layer: str = "parcels",
 ):
     """Exports and downloads processed GIS layer in requested format (GeoJSON, GeoPackage, Shapefile)."""
