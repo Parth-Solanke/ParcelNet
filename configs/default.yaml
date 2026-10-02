@@ -1,0 +1,75 @@
+project:
+  name: "CadastraAI Urban Parcel Extraction"
+  default_crs_epsg: 32643 # UTM Zone 43N (metric)
+  max_gsd_cm: 10.0
+  min_gsd_cm: 1.0
+
+ingestion:
+  allowed_raster_types: ["ORI", "DSM", "DTM", "NDSM"]
+  cog_block_size: 512
+  cog_compression: "DEFLATE"
+  cog_overview_resampling: "bilinear"
+  bounds_overlap_min_ratio: 0.90
+  control_points_max_rmse_cm: 50.0
+
+preprocessing:
+  ndsm_noise_min_height_m: 0.5
+  ndsm_median_filter_size: 3
+  percentile_min: 2.0
+  percentile_max: 98.0
+  clahe_clip_limit: 2.0
+  clahe_grid_size: 8
+  hillshade_azimuth_deg: 315.0
+  hillshade_altitude_deg: 45.0
+  stack_channels: "rgb+ndsm" # presets: "rgb", "rgb+ndsm", "rgb+ndsm+hillshade"
+
+tiling:
+  tile_size_px: 1024
+  overlap_ratio: 0.25 # 25% overlap
+  training_chip_size_px: 512
+  training_nodata_max_ratio: 0.70
+  blending_window: "hann" # "hann" or "cosine"
+
+segmentation:
+  architecture: "unetplusplus"
+  encoder: "efficientnet-b3"
+  encoder_weights: "imagenet"
+  in_channels: 4
+  classes:
+    buildings: 1
+    roads: 1
+    boundaries: 1
+    distance_map: 1
+    landuse: 8
+  loss_weights:
+    buildings: 1.0
+    roads: 1.0
+    boundaries: 2.5
+    distance_map: 0.5
+    landuse: 1.0
+  building_mode: "semantic" # "semantic" or "instance"
+
+vectorization:
+  buildings:
+    prob_threshold: 0.50
+    min_area_sqm: 4.0
+    simplify_tolerance_ratio: 1.5 # 1.5 * GSD
+    orthogonalize_angle_threshold_deg: 15.0
+    min_regularized_iou: 0.90
+  roads:
+    prob_threshold: 0.45
+    min_spur_length_m: 3.0
+    max_gap_bridge_m: 5.0
+    default_buffer_m: 3.5
+
+topology:
+  node_snap_tolerance_m: 0.30
+  min_face_area_sqm: 5.0
+  sliver_compactness_threshold: 0.05
+  voronoi_building_seed_weight: true
+
+validation:
+  overlap_area_tolerance_sqm: 0.05
+  gap_area_threshold_sqm: 10.0
+  spike_angle_min_deg: 15.0
+  max_relative_area_diff: 0.25

@@ -1,0 +1,55 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: cadastra_postgis
+    environment:
+      POSTGRES_USER: cadastra
+      POSTGRES_PASSWORD: cadastra_pw
+      POSTGRES_DB: cadastra_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cadastra -d cadastra_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: cadastra_redis
+    ports:
+      - "6379:6379"
+
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: cadastra_titiler
+    environment:
+      - PORT=8080
+      - WORKERS_PER_CORE=1
+    ports:
+      - "8080:8080"
+
+  api:
+    build: .
+    container_name: cadastra_api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+psycopg://cadastra:cadastra_pw@postgres:5432/cadastra_db
+      - REDIS_URL=redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+      - ./weights:/app/weights
+      - ./configs:/app/configs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+volumes:
+  postgis_data:

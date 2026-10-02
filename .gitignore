@@ -1,0 +1,53 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.env.*
+env/
+venv/
+.venv/
+ENV/
+
+# Data and large binary artifacts (CRITICAL: never commit datasets or weights)
+data/
+data/*
+!data/.gitkeep
+weights/
+weights/*
+!weights/.gitkeep
+
+# Raster and intermediate formats
+*.tif
+*.tiff
+*.vrt
+*.cog
+*.parquet
+*.feather
+*.h5
+*.pt
+*.pth
+*.onnx
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and scratch
+*.log
+scratch/
+.system_generated/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
