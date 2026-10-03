@@ -268,67 +268,138 @@
     </div>
   </div>
 
-  <script>
-    // State & Map Setup
-    let map;
-    let layers = { parcels: null, buildings: null, roads: null, issues: null };
-    let selectedParcel = null;
-    let activeProjectId = "demo-project-001";
+  <!-- Toast Notification Container -->
+  <div id="toast-container" class="fixed bottom-5 right-5 z-[100] flex flex-col gap-2 pointer-events-none"></div>
 
+  <script>
+    // ── State ──────────────────────────────────────────────────────────
+    let map, luChart;
+    let layers = { parcels: null, buildings: null, roads: null, issues: null };
+    let baseMaps = {};
+    let selectedParcel = null;
+    let activeProjectId = 'demo_project';
+    let parcelVersions = {};   // optimistic locking: parcel_id → version
+
+    // ── Toast Notification System ─────────────────────────────────────
+    function showToast(msg, type = 'info', duration = 4000) {
+      const colors = { info: 'bg-gray-800 border-gray-700', success: 'bg-emerald-950 border-emerald-700', error: 'bg-rose-950 border-rose-700', warning: 'bg-amber-950 border-amber-700' };
+      const icons  = { info: 'ph-info', success: 'ph-check-circle', error: 'ph-warning-circle', warning: 'ph-warning' };
+      const iconCol = { info: 'text-cyan-400', success: 'text-emerald-400', error: 'text-rose-400', warning: 'text-amber-400' };
+      const toast = document.createElement('div');
+      toast.className = `pointer-events-auto flex items-start gap-3 px-4 py-3 rounded-xl border shadow-2xl text-sm text-gray-200 transition-all duration-300 translate-y-4 opacity-0 ${colors[type]}`;
+      toast.innerHTML = `<i class="ph-bold ${icons[type]} text-lg mt-0.5 ${iconCol[type]}"></i><span class="flex-1">${msg}</span><button onclick="this.parentNode.remove()" class="text-gray-500 hover:text-white ml-2"><i class="ph-bold ph-x"></i></button>`;
+      document.getElementById('toast-container').appendChild(toast);
+      requestAnimationFrame(() => { toast.classList.remove('translate-y-4','opacity-0'); });
+      if (duration > 0) setTimeout(() => { toast.classList.add('opacity-0'); setTimeout(() => toast.remove(), 300); }, duration);
+      return toast;
+    }
+
+    // ── Map Initialisation ────────────────────────────────────────────
     function initMap() {
-      // Centered on sample coordinates (UTM 43N projected to approx WGS84 for display)
-      map = L.map('map', { zoomControl: false }).setView([18.08, 75.0], 16);
+      map = L.map('map', { zoomControl: false }).setView([18.0886, 75.0001], 17);
       L.control.zoom({ position: 'topright' }).addTo(map);
 
-      // CartoDB Dark Base Layer
-      L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-        attribution: '&copy; OpenStreetMap &copy; CARTO',
-        subdomains: 'abcd',
-        maxZoom: 20
-      }).addTo(map);
+      const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '&copy; Esri &mdash; DigitalGlobe, Earthstar Geographics', maxZoom: 20 });
+      const darkCanvas = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '&copy; Esri &copy; OpenStreetMap', maxZoom: 16 });
+      const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors', maxZoom: 19 });
+
+      satellite.addTo(map);
+      baseMaps = { '🛰️ Satellite Imagery': satellite, '🌑 Dark Canvas': darkCanvas, '🗺️ OpenStreetMap': osm };
+      L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
       loadAllLayers();
       initChart();
+      refreshStats();
     }
 
+    // ── Layer Loaders ─────────────────────────────────────────────────
     async function loadAllLayers() {
-      // 1. Load Parcels
+      await Promise.all([loadParcels(), loadBuildings(), loadRoads()]);
+    }
+
+    async function loadParcels() {
       try {
         const res = await fetch(`/projects/${activeProjectId}/layers/parcels`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (layers.parcels) map.removeLayer(layers.parcels);
-
         layers.parcels = L.geoJSON(data, {
-          style: {
-            color: '#10B981',
-            weight: 2,
-            fillColor: '#059669',
-            fillOpacity: 0.35
-          },
+          style: { color: '#10B981', weight: 2.5, fillColor: '#059669', fillOpacity: 0.35 },
           onEachFeature: (feature, layer) => {
+            const p = feature.properties || {};
+            layer.bindTooltip(`<b>Parcel ${p.parcel_no || p.id || 'N/A'}</b><br>Land-Use: ${p.landuse || '—'}<br>Area: ${p.area_sqm ? Math.round(p.area_sqm)+' m²' : '—'}`, { sticky: true });
             layer.on('click', () => inspectParcel(feature));
           }
         }).addTo(map);
 
-        if (data.features && data.features.length > 0) {
-          map.fitBounds(layers.parcels.getBounds(), { padding: [50, 50] });
-          document.getElementById('stat-parcels').innerText = data.features.length;
+        const n = data.features ? data.features.length : 0;
+        document.getElementById('stat-parcels').innerText = n;
+        if (n > 0) {
+          const bounds = layers.parcels.getBounds();
+          if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60] });
+          updateLandUseChart(data.features);
         }
       } catch (e) {
-        console.warn('Parcels layer not yet loaded:', e);
+        console.warn('Parcels layer load error:', e);
+        showToast('Parcels layer unavailable — run the pipeline first.', 'warning');
       }
     }
 
+    async function loadBuildings() {
+      try {
+        const res = await fetch(`/projects/${activeProjectId}/layers/buildings`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (layers.buildings) map.removeLayer(layers.buildings);
+        layers.buildings = L.geoJSON(data, {
+          style: { color: '#F43F5E', weight: 2, fillColor: '#E11D48', fillOpacity: 0.65 },
+          onEachFeature: (f, l) => {
+            const h = (f.properties || {}).height_m;
+            l.bindTooltip(`Building — Height: ${h != null ? h.toFixed(1) : '?'}m`, { sticky: true });
+          }
+        }).addTo(map);
+      } catch (e) { console.warn('Buildings layer load error:', e); }
+    }
+
+    async function loadRoads() {
+      try {
+        const res = await fetch(`/projects/${activeProjectId}/layers/roads`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (layers.roads) map.removeLayer(layers.roads);
+        layers.roads = L.geoJSON(data, { style: { color: '#F59E0B', weight: 3, dashArray: '6 4' } }).addTo(map);
+      } catch (e) { console.warn('Roads layer load error:', e); }
+    }
+
+    // ── Live Stats Refresh ────────────────────────────────────────────
+    async function refreshStats() {
+      try {
+        const res = await fetch(`/projects/${activeProjectId}/validation/run`, { method: 'POST' });
+        if (!res.ok) return;
+        const s = await res.json();
+        document.getElementById('stat-clean').innerText = `${(s.clean_percentage ?? 100).toFixed(0)}%`;
+        document.getElementById('stat-issues').innerText = s.total_issues ?? 0;
+      } catch (_) { /* silent — data might not be present yet */ }
+    }
+
+    // ── Parcel Inspector ──────────────────────────────────────────────
     function inspectParcel(feature) {
       selectedParcel = feature;
-      const props = feature.properties || {};
-      document.getElementById('inspector-id').innerText = `Parcel ${props.id || 'N/A'}`;
-      document.getElementById('inspector-area').innerText = `${props.area_sqm || '--'} m²`;
-      document.getElementById('inspector-perimeter').innerText = `${props.perimeter_m || '--'} m`;
-      document.getElementById('inspector-compactness').innerText = `${props.compactness || '--'}`;
-      document.getElementById('inspector-bldgs').innerText = `${props.buildings_count || 0}`;
-      document.getElementById('inspector-landuse').innerText = props.landuse || 'residential';
-      document.getElementById('inspector-conf').innerText = `${Math.round((props.confidence || 0.85) * 100)}%`;
+      const p = feature.properties || {};
+      const pId = p.id || p.parcel_no || 'N/A';
+      document.getElementById('inspector-id').innerText = `Parcel ${pId}`;
+      document.getElementById('inspector-area').innerText = p.area_sqm != null ? `${Math.round(p.area_sqm)} m²` : '—';
+      document.getElementById('inspector-perimeter').innerText = p.perimeter_m != null ? `${Math.round(p.perimeter_m)} m` : '—';
+      document.getElementById('inspector-compactness').innerText = p.compactness != null ? p.compactness.toFixed(3) : '—';
+      document.getElementById('inspector-bldgs').innerText = p.buildings_count ?? 0;
+      document.getElementById('inspector-landuse').innerText = p.landuse || 'residential';
+      const conf = p.confidence != null ? Math.round(p.confidence * 100) : 85;
+      document.getElementById('inspector-conf').innerText = `${conf}%`;
+      // Store version for optimistic locking
+      parcelVersions[pId] = p.version || 1;
       document.getElementById('parcel-inspector').classList.remove('hidden');
     }
 
@@ -339,59 +410,145 @@
 
     async function updateParcelStatus(newStatus) {
       if (!selectedParcel) return;
-      const id = selectedParcel.properties.id || "p1";
-      await fetch(`/parcels/${id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ version: 1, status: newStatus })
-      });
-      alert(`Parcel ${id} marked as ${newStatus}!`);
+      const p = selectedParcel.properties || {};
+      const id = p.id || p.parcel_no || 'p1';
+      const version = parcelVersions[id] || 1;
+      try {
+        const res = await fetch(`/parcels/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version, status: newStatus })
+        });
+        if (res.status === 409) { showToast('Conflict: parcel was updated elsewhere. Reload and retry.', 'warning'); return; }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        parcelVersions[id] = data.updated?.version || version + 1;
+        const colors = { verified: 'success', edited: 'warning', rejected: 'error' };
+        showToast(`Parcel <b>${id}</b> marked as <b>${newStatus}</b>.`, colors[newStatus] || 'info');
+      } catch (e) {
+        showToast(`Failed to update parcel: ${e.message}`, 'error');
+      }
     }
 
+    // ── Pipeline Trigger ──────────────────────────────────────────────
     async function triggerPipeline() {
+      const btn = document.getElementById('btn-run-pipeline');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="ph-bold ph-circle-notch animate-spin"></i><span>Starting…</span>';
+
       const progEl = document.getElementById('pipeline-progress');
       progEl.classList.remove('hidden');
-      document.getElementById('progress-bar').style.width = '20%';
-      document.getElementById('progress-pct').innerText = '20%';
-      document.getElementById('progress-step').innerText = 'Ingesting & Georeferencing...';
 
-      setTimeout(() => {
-        document.getElementById('progress-bar').style.width = '60%';
-        document.getElementById('progress-pct').innerText = '60%';
-        document.getElementById('progress-step').innerText = 'Multi-Task Inference & Topology...';
-      }, 1500);
+      const setProgress = (pct, msg) => {
+        document.getElementById('progress-bar').style.width = `${pct}%`;
+        document.getElementById('progress-pct').innerText = `${pct}%`;
+        document.getElementById('progress-step').innerText = msg;
+      };
 
-      setTimeout(() => {
-        document.getElementById('progress-bar').style.width = '100%';
-        document.getElementById('progress-pct').innerText = '100%';
-        document.getElementById('progress-step').innerText = 'Validation & Auto-healing Complete!';
-        setTimeout(() => {
-          progEl.classList.add('hidden');
-          loadAllLayers();
-        }, 1000);
-      }, 3000);
+      setProgress(5, 'Submitting job…');
+
+      try {
+        // POST to create a pipeline job
+        const res = await fetch(`/projects/${activeProjectId}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ori_filename: 'demo_ori.tif', auto_heal: true })
+        });
+
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const job = await res.json();
+        const jobId = job.job_id;
+        showToast(`Pipeline job <b>${jobId.slice(0,8)}</b> started.`, 'info', 3000);
+
+        // Poll job status every 2 seconds
+        const steps = [
+          [15,  'Step 1/8: Ingestion & Georeferencing QC'],
+          [28,  'Step 2/8: Preprocessing & Feature Stacking'],
+          [45,  'Step 3/8: Multi-Task AI Tiled Inference (TTA)'],
+          [62,  'Step 4/8: Vectorizing Buildings & Roads'],
+          [72,  'Step 5/8: Boundary Line Network Construction'],
+          [82,  'Step 6/8: Face Polygonization & Sliver Merge'],
+          [90,  'Step 7/8: Land-Use Attribution'],
+          [96,  'Step 8/8: Topology Validation & Auto-Healing'],
+        ];
+        let stepIdx = 0;
+        const stepTimer = setInterval(() => {
+          if (stepIdx < steps.length) {
+            setProgress(...steps[stepIdx++]);
+          }
+        }, 1800);
+
+        let done = false;
+        while (!done) {
+          await new Promise(r => setTimeout(r, 2500));
+          const jr = await fetch(`/jobs/${jobId}`);
+          if (!jr.ok) continue;
+          const jd = await jr.json();
+          if (jd.status === 'completed') {
+            done = true;
+            clearInterval(stepTimer);
+            setProgress(100, 'Pipeline complete! Loading results…');
+            setTimeout(async () => {
+              progEl.classList.add('hidden');
+              await loadAllLayers();
+              await refreshStats();
+              showToast('Pipeline completed successfully! All layers updated.', 'success');
+            }, 800);
+          } else if (jd.status === 'failed') {
+            done = true;
+            clearInterval(stepTimer);
+            progEl.classList.add('hidden');
+            showToast(`Pipeline failed: ${(jd.log || []).slice(-1)[0] || 'Unknown error'}`, 'error', 0);
+          }
+        }
+      } catch (e) {
+        progEl.classList.add('hidden');
+        showToast(`Pipeline error: ${e.message}`, 'error', 0);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="ph-bold ph-play"></i><span>Run Pipeline</span>';
+      }
     }
 
+    // ── Auto-Heal ─────────────────────────────────────────────────────
     async function autoHealParcels() {
-      const res = await fetch(`/projects/${activeProjectId}/validation/autofix`, { method: 'POST' });
-      const data = await res.json();
-      alert(`AutoFix Complete! Applied ${data.repairs_count || 0} repairs. Clean percentage: ${data.post_validation_summary?.clean_percentage || 100}%`);
-      loadAllLayers();
+      const t = showToast('Running topology auto-heal…', 'info', 0);
+      try {
+        const res = await fetch(`/projects/${activeProjectId}/validation/autofix`, { method: 'POST' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        t.remove();
+        const s = data.post_validation_summary || {};
+        showToast(`Auto-Heal done! <b>${data.repairs_count ?? 0}</b> repairs applied. Topology clean: <b>${(s.clean_percentage ?? 100).toFixed(0)}%</b>`, 'success', 6000);
+        await loadAllLayers();
+        await refreshStats();
+      } catch (e) {
+        t.remove();
+        showToast(`Auto-Heal failed: ${e.message}`, 'error');
+      }
     }
 
+    // ── Download Verification List ───────────────────────────────────
     function downloadVerificationList() {
-      window.location.href = `/projects/${activeProjectId}/gt/verification-list`;
+      window.open(`/projects/${activeProjectId}/gt/verification-list`, '_blank');
+      showToast('Field verification list opened in new tab.', 'info', 3000);
     }
 
+    // ── Modal & Layer Toggles ─────────────────────────────────────────
     function toggleModal(id) {
       document.getElementById(id).classList.toggle('hidden');
     }
 
     function downloadGISLayer() {
       const format = document.getElementById('export-format').value;
-      const layer = document.getElementById('export-layer').value;
+      const layer  = document.getElementById('export-layer').value;
       window.location.href = `/projects/${activeProjectId}/layers/export/download?format=${format}&layer=${layer}`;
       toggleModal('export-modal');
+      showToast(`Downloading <b>${layer}</b> as <b>${format.toUpperCase()}</b>…`, 'info', 3000);
     }
 
     function toggleLayer(name) {
@@ -403,27 +560,45 @@
       }
     }
 
+    // ── Land-Use Chart ────────────────────────────────────────────────
     function initChart() {
       const ctx = document.getElementById('landuse-chart').getContext('2d');
-      new Chart(ctx, {
+      luChart = new Chart(ctx, {
         type: 'doughnut',
         data: {
-          labels: ['Residential', 'Vegetation', 'Roads', 'Open Land'],
-          datasets: [{
-            data: [65, 20, 10, 5],
-            backgroundColor: ['#10B981', '#059669', '#F59E0B', '#6B7280'],
-            borderWidth: 0
-          }]
+          labels: ['Residential', 'Commercial', 'Vegetation', 'Roads', 'Open Land', 'Industrial', 'Other'],
+          datasets: [{ data: [0,0,0,0,0,0,0], backgroundColor: ['#10B981','#06B6D4','#22C55E','#F59E0B','#6B7280','#8B5CF6','#94A3B8'], borderWidth: 0 }]
         },
         options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { position: 'bottom', labels: { boxWidth: 10, color: '#9CA3AF', font: { size: 10 } } }
-          }
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { position: 'bottom', labels: { boxWidth: 10, color: '#9CA3AF', font: { size: 10 } } } }
         }
       });
     }
+
+    function updateLandUseChart(features) {
+      if (!luChart || !features) return;
+      const counts = {};
+      features.forEach(f => {
+        const lu = (f.properties?.landuse || 'other').toLowerCase().replace('_', ' ');
+        counts[lu] = (counts[lu] || 0) + 1;
+      });
+      const labels = Object.keys(counts);
+      const data   = Object.values(counts);
+      const palette = ['#10B981','#06B6D4','#22C55E','#F59E0B','#6B7280','#8B5CF6','#94A3B8','#F87171','#FBBF24'];
+      luChart.data.labels = labels;
+      luChart.data.datasets[0].data = data;
+      luChart.data.datasets[0].backgroundColor = palette.slice(0, labels.length);
+      luChart.update();
+    }
+
+    // ── Keyboard shortcuts ────────────────────────────────────────────
+    document.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        closeInspector();
+        document.getElementById('export-modal').classList.add('hidden');
+      }
+    });
 
     window.onload = initMap;
   </script>
